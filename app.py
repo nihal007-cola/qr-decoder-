@@ -2,69 +2,65 @@ from flask import Flask, request, jsonify
 import cv2
 import numpy as np
 from PIL import Image
-import threading
-import queue
 
 app = Flask(__name__)
-
-# 🔥 QUEUE SYSTEM
-task_queue = queue.Queue()
-
-def worker():
-    while True:
-        file = task_queue.get()
-        try:
-            process_image(file)
-        except Exception as e:
-            print("Worker error:", e)
-        task_queue.task_done()
-
-# Start background worker
-threading.Thread(target=worker, daemon=True).start()
 
 def detect_qr_opencv(image):
     qr = cv2.QRCodeDetector()
 
     h, w, _ = image.shape
-    crop = image[int(h * 0.6):h, int(w * 0.6):w]
-    crop = cv2.resize(crop, None, fx=3, fy=3)
+
+    # 🔥 precise bottom-right crop (tighter)
+    crop = image[int(h * 0.65):h, int(w * 0.65):w]
+
+    # 🔥 upscale aggressively
+    crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_LINEAR)
 
     gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-    enhanced = cv2.convertScaleAbs(gray, alpha=1.8)
 
-    for img in [crop, gray, enhanced]:
+    # 🔥 strong contrast
+    enhanced = cv2.convertScaleAbs(gray, alpha=2.0, beta=0)
+
+    # 🔥 threshold (VERY IMPORTANT for WhatsApp compression)
+    _, thresh = cv2.threshold(enhanced, 150, 255, cv2.THRESH_BINARY)
+
+    # Try all versions
+    for img in [crop, gray, enhanced, thresh]:
         data, _, _ = qr.detectAndDecode(img)
         if data:
-            print("QR FOUND:", data)
-            return
+            return [data]
 
-    print("QR NOT FOUND")
+    # fallback full image
+    data, _, _ = qr.detectAndDecode(image)
+    if data:
+        return [data]
 
-def process_image(file):
-    image = Image.open(file).convert('RGB')
-    img_np = np.array(image)
-    detect_qr_opencv(img_np)
+    return []
 
 @app.route("/decode", methods=["POST"])
 def decode_qr():
     try:
         if 'file' not in request.files:
-            return jsonify({"success": False})
+            return jsonify({"success": False, "error": "No file uploaded"})
 
         file = request.files['file']
 
-        # 🔥 ADD TO QUEUE (NON BLOCKING)
-        task_queue.put(file.stream)
+        image = Image.open(file.stream).convert('RGB')
+        img_np = np.array(image)
 
-        # 🔥 INSTANT RESPONSE
-        return jsonify({"success": True, "queued": True})
+        results = detect_qr_opencv(img_np)
+
+        if not results:
+            return jsonify({"success": False, "data": None})
+
+        return jsonify({"success": True, "data": results})
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
 @app.route("/", methods=["GET"])
 def home():
-    return "QR Queue Running 🚀"
+    return "QR Decoder Running 🚀"
 
 if __name__ == "__main__":
     import os
