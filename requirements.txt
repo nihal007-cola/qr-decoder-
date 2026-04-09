@@ -1,0 +1,5 @@
+flask
+pyzbar
+opencv-python-headless
+pillow
+numpy
